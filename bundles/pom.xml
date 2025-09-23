@@ -54,6 +54,7 @@
     <module>org.openhab.core.persistence</module>
     <module>org.openhab.core.semantics</module>
     <module>org.openhab.core.thing</module>
+    <module>org.openhab.core.thing.jdbc</module>
     <module>org.openhab.core.transform</module>
     <module>org.openhab.core.voice</module>
     <module>org.openhab.core.karaf</module>
