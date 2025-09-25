@@ -89,14 +89,13 @@ import org.slf4j.LoggerFactory;
         JdbcThingProvider.class }, immediate = false, configurationPid = JdbcThingProviderConfiguration.CONFIG_PID)
 @NonNullByDefault
 public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingProvider {
-
-    private static final String TABLE_THINGS = "oh_things";
-    private static final String TABLE_THING_PROPERTIES = "oh_thing_properties";
-    private static final String TABLE_THING_CONFIG = "oh_thing_config";
-    private static final String TABLE_CHANNELS = "oh_channels";
-    private static final String TABLE_CHANNEL_PROPERTIES = "oh_channel_properties";
-    private static final String TABLE_CHANNEL_CONFIG = "oh_channel_config";
-    private static final String TABLE_CHANNEL_TAGS = "oh_channel_tags";
+    private static final String TABLE_THINGS = "things";
+    private static final String TABLE_THING_PROPERTIES = "thing_properties";
+    private static final String TABLE_THING_CONFIG = "thing_config";
+    private static final String TABLE_CHANNELS = "channels";
+    private static final String TABLE_CHANNEL_PROPERTIES = "channel_properties";
+    private static final String TABLE_CHANNEL_CONFIG = "channel_config";
+    private static final String TABLE_CHANNEL_TAGS = "channel_tags";
 
     private final Logger logger = LoggerFactory.getLogger(JdbcThingProvider.class);
     private final ThingTypeRegistry thingTypeRegistry;
@@ -147,40 +146,36 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
      * Forces an immediate refresh of the backing data source.
      */
     public void refresh() {
-        reloadFromDatabase();
+        try {
+            reloadFromDatabase();
+        } catch (Exception e) {
+            logger.warn("Scheduled JDBC refresh failed: {}", e.getMessage(), e);
+        }
     }
 
     private void applyConfiguration(@Nullable Map<String, Object> properties) {
         cancelRefresh();
+
         var parsedConfig = JdbcThingProviderConfiguration.from(properties);
-        if (parsedConfig.isEmpty()) {
+        if (parsedConfig == null) {
             logger.warn("JDBC thing provider disabled - mandatory property 'url' is missing.");
             configuration = null;
             clearProvidedThings();
             return;
         }
 
-        JdbcThingProviderConfiguration newConfig = parsedConfig.get();
-        configuration = newConfig;
+        configuration = parsedConfig;
         schemaInitialized = false;
         reloadFromDatabase();
-        scheduleRefreshIfNecessary(newConfig.refreshInterval);
+        scheduleRefreshIfNecessary(parsedConfig.refreshInterval);
     }
 
     private void scheduleRefreshIfNecessary(Duration refreshInterval) {
         if (refreshInterval.isZero() || refreshInterval.isNegative()) {
             return;
         }
-        refreshFuture = scheduler.scheduleWithFixedDelay(this::safeReload, refreshInterval.getSeconds(),
+        refreshFuture = scheduler.scheduleWithFixedDelay(this::refresh, refreshInterval.getSeconds(),
                 refreshInterval.getSeconds(), TimeUnit.SECONDS);
-    }
-
-    private void safeReload() {
-        try {
-            reloadFromDatabase();
-        } catch (Exception e) {
-            logger.warn("Scheduled JDBC refresh failed: {}", e.getMessage(), e);
-        }
     }
 
     private void reloadFromDatabase() {
@@ -281,8 +276,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
                     continue;
                 }
 
-                boolean isBridge = determineBridgeFlag(row, thingTypeUID);
-                ThingBuilder builder = isBridge ? BridgeBuilder.create(thingTypeUID, thingUID)
+                ThingBuilder builder = determineBridgeFlag(thingTypeUID) ? BridgeBuilder.create(thingTypeUID, thingUID)
                         : ThingBuilder.create(thingTypeUID, thingUID);
 
                 if (row.label() != null) {
@@ -298,7 +292,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
 
                 Map<String, String> props = thingProperties.getOrDefault(row.uid(), Map.of());
                 if (!props.isEmpty()) {
-                    builder.withProperties(Map.copyOf(props));
+                    builder.withProperties(props);
                 }
 
                 Map<String, Object> configValues = convertConfiguration(thingConfigRaw.get(row.uid()));
@@ -351,7 +345,8 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
 
     private void populateThingProperties(Connection connection, String thingUid, ThingType thingType,
             Map<String, Map<String, String>> thingProperties) {
-        Map<String, String> existing = thingProperties.computeIfAbsent(thingUid, key -> new HashMap<>());
+        Map<String, String> existing = Objects
+                .requireNonNull(thingProperties.computeIfAbsent(thingUid, key -> new HashMap<>()));
         for (Map.Entry<String, String> entry : thingType.getProperties().entrySet()) {
             if (existing.containsKey(entry.getKey())) {
                 continue;
@@ -385,7 +380,8 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
             return;
         }
 
-        Map<String, @Nullable String> existing = thingConfigRaw.computeIfAbsent(thingUid, key -> new HashMap<>());
+        Map<String, @Nullable String> existing = Objects
+                .requireNonNull(thingConfigRaw.computeIfAbsent(thingUid, key -> new HashMap<>()));
         for (Map.Entry<String, Object> entry : config.getProperties().entrySet()) {
             if (existing.containsKey(entry.getKey())) {
                 continue;
@@ -422,7 +418,8 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
             return;
         }
 
-        List<ChannelRow> existingRows = channelRows.computeIfAbsent(thingUid, key -> new ArrayList<>());
+        List<ChannelRow> existingRows = Objects
+                .requireNonNull(channelRows.computeIfAbsent(thingUid, key -> new ArrayList<>()));
         Map<String, ChannelRow> existingByUid = new HashMap<>();
         for (ChannelRow row : existingRows) {
             existingByUid.put(row.uid(), row);
@@ -432,11 +429,12 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
             String channelUid = channel.getUID().getAsString();
             ChannelRow currentRow = existingByUid.get(channelUid);
             if (currentRow == null && insertChannel(connection, channel, thingUid)) {
+                var channelTypeUID = channel.getChannelTypeUID();
+                var autoUpdatePolicy = channel.getAutoUpdatePolicy();
                 ChannelRow newRow = new ChannelRow(channelUid, thingUid,
-                        channel.getChannelTypeUID() != null ? channel.getChannelTypeUID().toString() : null,
-                        channel.getAcceptedItemType(), channel.getKind().name(), channel.getLabel(),
-                        channel.getDescription(),
-                        channel.getAutoUpdatePolicy() != null ? channel.getAutoUpdatePolicy().name() : null);
+                        channelTypeUID != null ? channelTypeUID.toString() : null, channel.getAcceptedItemType(),
+                        channel.getKind().name(), channel.getLabel(), channel.getDescription(),
+                        autoUpdatePolicy != null ? autoUpdatePolicy.name() : null);
                 existingRows.add(newRow);
                 existingByUid.put(channelUid, newRow);
             }
@@ -452,7 +450,8 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
         if (defaults.isEmpty()) {
             return;
         }
-        Map<String, String> existing = channelProperties.computeIfAbsent(channelUid, key -> new HashMap<>());
+        Map<String, String> existing = Objects
+                .requireNonNull(channelProperties.computeIfAbsent(channelUid, key -> new HashMap<>()));
         for (Map.Entry<String, String> entry : defaults.entrySet()) {
             if (existing.containsKey(entry.getKey())) {
                 continue;
@@ -469,7 +468,8 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
         if (configuration.keySet().isEmpty()) {
             return;
         }
-        Map<String, String> existing = channelConfigRaw.computeIfAbsent(channelUid, key -> new HashMap<>());
+        Map<String, String> existing = Objects
+                .requireNonNull(channelConfigRaw.computeIfAbsent(channelUid, key -> new HashMap<>()));
         for (Map.Entry<String, Object> entry : configuration.getProperties().entrySet()) {
             if (existing.containsKey(entry.getKey())) {
                 continue;
@@ -486,7 +486,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
         if (defaults.isEmpty()) {
             return;
         }
-        Set<String> existing = channelTags.computeIfAbsent(channelUid, key -> new HashSet<>());
+        Set<String> existing = Objects.requireNonNull(channelTags.computeIfAbsent(channelUid, key -> new HashSet<>()));
         for (String tag : defaults) {
             if (existing.contains(tag)) {
                 continue;
@@ -497,50 +497,12 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
         }
     }
 
-    private static final class ThingDescriptor {
-        private final Thing thing;
-        private final ThingSnapshot snapshot;
-
-        ThingDescriptor(Thing thing, ThingSnapshot snapshot) {
-            this.thing = thing;
-            this.snapshot = snapshot;
-        }
-
-        Thing thing() {
-            return thing;
-        }
-
-        ThingSnapshot snapshot() {
-            return snapshot;
-        }
+    private record ThingDescriptor(Thing thing, ThingSnapshot snapshot) {
     }
 
-    private static final class ThingSnapshot {
-        private final @Nullable String label;
-        private final @Nullable String location;
-        private final Map<String, String> configuration;
-
-        ThingSnapshot(@Nullable String label, @Nullable String location, Map<String, String> configuration) {
-            this.label = label;
-            this.location = location;
-            this.configuration = Collections.unmodifiableMap(new HashMap<>(configuration));
-        }
-
-        @Override
-        public boolean equals(@Nullable Object obj) {
-            if (this == obj) {
-                return true;
-            }
-            if (!(obj instanceof ThingSnapshot other)) {
-                return false;
-            }
-            return Objects.equals(label, other.label) && Objects.equals(location, other.location)
-                    && Objects.equals(configuration, other.configuration);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(label, location, configuration);
+    private record ThingSnapshot(@Nullable String label, @Nullable String location, Map<String, String> configuration) {
+        ThingSnapshot {
+            configuration = Collections.unmodifiableMap(new HashMap<>(configuration));
         }
     }
 
@@ -783,18 +745,14 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
         return channels;
     }
 
-    private boolean determineBridgeFlag(ThingRow row, ThingTypeUID thingTypeUID) {
-        if (row.isBridge() != null) {
-            return row.isBridge();
-        }
+    private boolean determineBridgeFlag(ThingTypeUID thingTypeUID) {
         ThingType thingType = thingTypeRegistry.getThingType(thingTypeUID);
         return thingType instanceof BridgeType;
     }
 
     private Map<String, ThingRow> loadThingRows(Connection connection) throws SQLException {
         Map<String, ThingRow> rows = new HashMap<>();
-        String sql = "SELECT uid, thing_type_uid, label, bridge_uid, location, semantic_equipment_tag, is_bridge FROM "
-                + TABLE_THINGS;
+        String sql = "SELECT * FROM " + TABLE_THINGS;
         try (PreparedStatement statement = connection.prepareStatement(sql); ResultSet rs = statement.executeQuery()) {
             while (rs.next()) {
                 String uid = rs.getString("uid");
@@ -803,9 +761,8 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
                     logger.warn("Encountered thing row with missing UID or thing type UID - skipping entry.");
                     continue;
                 }
-                Boolean isBridge = extractBoolean(rs, "is_bridge");
                 rows.put(uid, new ThingRow(uid, thingTypeUid, rs.getString("label"), rs.getString("bridge_uid"),
-                        rs.getString("location"), rs.getString("semantic_equipment_tag"), isBridge));
+                        rs.getString("location"), rs.getString("semantic_equipment_tag")));
             }
         }
         return rows;
@@ -813,8 +770,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
 
     private Map<String, List<ChannelRow>> loadChannelRows(Connection connection) throws SQLException {
         Map<String, List<ChannelRow>> rows = new HashMap<>();
-        String sql = "SELECT uid, thing_uid, channel_type_uid, item_type, kind, label, description, auto_update_policy "
-                + "FROM " + TABLE_CHANNELS;
+        String sql = "SELECT * FROM " + TABLE_CHANNELS;
         try (PreparedStatement statement = connection.prepareStatement(sql); ResultSet rs = statement.executeQuery()) {
             while (rs.next()) {
                 String uid = rs.getString("uid");
@@ -826,7 +782,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
                 ChannelRow row = new ChannelRow(uid, thingUid, rs.getString("channel_type_uid"),
                         rs.getString("item_type"), rs.getString("kind"), rs.getString("label"),
                         rs.getString("description"), rs.getString("auto_update_policy"));
-                rows.computeIfAbsent(thingUid, key -> new ArrayList<>()).add(row);
+                Objects.requireNonNull(rows.computeIfAbsent(thingUid, key -> new ArrayList<>())).add(row);
             }
         }
         return rows;
@@ -844,7 +800,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
                     continue;
                 }
                 String value = rs.getString("value");
-                map.computeIfAbsent(scope, key -> new HashMap<>()).put(name, value);
+                Objects.requireNonNull(map.computeIfAbsent(scope, key -> new HashMap<>())).put(name, value);
             }
         }
         return map;
@@ -852,7 +808,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
 
     private Map<String, Set<String>> loadChannelTags(Connection connection) throws SQLException {
         Map<String, Set<String>> map = new HashMap<>();
-        String sql = "SELECT channel_uid, tag FROM " + TABLE_CHANNEL_TAGS;
+        String sql = "SELECT * FROM " + TABLE_CHANNEL_TAGS;
         try (PreparedStatement statement = connection.prepareStatement(sql); ResultSet rs = statement.executeQuery()) {
             while (rs.next()) {
                 String channelUid = rs.getString("channel_uid");
@@ -860,7 +816,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
                 if (channelUid == null || tag == null) {
                     continue;
                 }
-                map.computeIfAbsent(channelUid, key -> new HashSet<>()).add(tag);
+                Objects.requireNonNull(map.computeIfAbsent(channelUid, key -> new HashSet<>())).add(tag);
             }
         }
         return map;
@@ -870,61 +826,70 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
         if (rawConfig == null || rawConfig.isEmpty()) {
             return Map.of();
         }
+
         Map<String, Object> result = new HashMap<>();
         rawConfig.forEach((key, value) -> result.put(key, convertScalar(value)));
         return result;
     }
 
     private Object convertScalar(@Nullable String value) {
-        if (value == null) {
-            return "";
-        }
-        String trimmed = value.trim();
-        if (trimmed.isEmpty()) {
-            return "";
-        }
-        if ("true".equalsIgnoreCase(trimmed) || "false".equalsIgnoreCase(trimmed)) {
-            return Boolean.parseBoolean(trimmed);
-        }
+        return switch (value) {
+            case null -> "";
+            case String v -> {
+                String trimmed = v.trim();
+                yield switch (trimmed) {
+                    case "" -> "";
+                    case String bool when bool.equalsIgnoreCase("true") || bool.equalsIgnoreCase("false") ->
+                        Boolean.parseBoolean(bool);
+                    default -> parseNumberOrFallback(trimmed);
+                };
+            }
+        };
+    }
+
+    private Object parseNumberOrFallback(String trimmed) {
         try {
             if (!trimmed.contains(".")) {
-                long number = Long.parseLong(trimmed);
-                return number;
+                return Long.parseLong(trimmed);
             }
-        } catch (NumberFormatException e) {
-            // ignore and try parsing as double
+        } catch (NumberFormatException ignore) {
+            // fall through and try parsing as double
         }
         try {
-            double parsed = Double.parseDouble(trimmed);
-            return parsed;
-        } catch (NumberFormatException e) {
-            // fall through and return the original string
+            return Double.parseDouble(trimmed);
+        } catch (NumberFormatException ignore) {
+            return trimmed;
         }
-        return trimmed;
     }
 
     private ChannelKind parseChannelKind(@Nullable String value) {
-        if (value == null || value.isBlank()) {
-            return ChannelKind.STATE;
-        }
-        try {
-            return ChannelKind.valueOf(value.trim().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            logger.warn("Unknown channel kind '{}', defaulting to STATE.", value);
-            return ChannelKind.STATE;
-        }
+        return switch (value) {
+            case null -> ChannelKind.STATE;
+            case String s when s.isBlank() -> ChannelKind.STATE;
+            case String s -> {
+                try {
+                    yield ChannelKind.valueOf(s.trim().toUpperCase(Locale.ROOT));
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Unknown channel kind '{}', defaulting to STATE.", value);
+                    yield ChannelKind.STATE;
+                }
+            }
+        };
     }
 
     private @Nullable AutoUpdatePolicy parseAutoUpdatePolicy(@Nullable String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            return AutoUpdatePolicy.valueOf(value.trim().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            logger.warn("Unknown auto update policy '{}'.", value);
-            return null;
-        }
+        return switch (value) {
+            case null -> null;
+            case String s when s.isBlank() -> null;
+            case String s -> {
+                try {
+                    yield AutoUpdatePolicy.valueOf(s.trim().toUpperCase(Locale.ROOT));
+                } catch (IllegalArgumentException e) {
+                    logger.warn("Unknown auto update policy '{}'.", value);
+                    yield null;
+                }
+            }
+        };
     }
 
     private @Nullable ThingUID parseThingUID(@Nullable String value) {
@@ -983,36 +948,35 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
 
     private void createSchema(Connection connection) throws SQLException {
         logger.info("Creating JDBC thing provider schema.");
-        List<String> statements = List.of(
-                "CREATE TABLE " + TABLE_THINGS
-                        + " (uid VARCHAR(255) PRIMARY KEY, thing_type_uid VARCHAR(255) NOT NULL, label VARCHAR(255), "
-                        + "bridge_uid VARCHAR(255), location VARCHAR(255), semantic_equipment_tag VARCHAR(255), "
-                        + "is_bridge BOOLEAN DEFAULT FALSE)",
+        List<String> statements = List.of("CREATE TABLE " + TABLE_THINGS
+                + " (uid VARCHAR(255) NOT NULL, thing_type_uid VARCHAR(255) NOT NULL, "
+                + "label VARCHAR(255), bridge_uid VARCHAR(255), location VARCHAR(255), semantic_equipment_tag VARCHAR(255), "
+                + "PRIMARY KEY (uid))",
                 "CREATE TABLE " + TABLE_THING_PROPERTIES
                         + " (thing_uid VARCHAR(255) NOT NULL, name VARCHAR(255) NOT NULL, value TEXT, "
                         + "PRIMARY KEY (thing_uid, name), " + "FOREIGN KEY (thing_uid) REFERENCES " + TABLE_THINGS
-                        + "(uid) ON DELETE CASCADE)",
+                        + "(uid) ON DELETE CASCADE ON UPDATE CASCADE)",
                 "CREATE TABLE " + TABLE_THING_CONFIG
                         + " (thing_uid VARCHAR(255) NOT NULL, name VARCHAR(255) NOT NULL, value TEXT, "
                         + "PRIMARY KEY (thing_uid, name), " + "FOREIGN KEY (thing_uid) REFERENCES " + TABLE_THINGS
-                        + "(uid) ON DELETE CASCADE)",
+                        + "(uid) ON DELETE CASCADE ON UPDATE CASCADE)",
                 "CREATE TABLE " + TABLE_CHANNELS
                         + " (uid VARCHAR(255) PRIMARY KEY, thing_uid VARCHAR(255) NOT NULL, channel_type_uid VARCHAR(255), "
                         + "item_type VARCHAR(255), kind VARCHAR(32) NOT NULL, label VARCHAR(255), description TEXT, "
                         + "auto_update_policy VARCHAR(32), FOREIGN KEY (thing_uid) REFERENCES " + TABLE_THINGS
-                        + "(uid) ON DELETE CASCADE)",
+                        + "(uid) ON DELETE CASCADE ON UPDATE CASCADE)",
                 "CREATE TABLE " + TABLE_CHANNEL_PROPERTIES
                         + " (channel_uid VARCHAR(255) NOT NULL, name VARCHAR(255) NOT NULL, value TEXT, "
                         + "PRIMARY KEY (channel_uid, name), " + "FOREIGN KEY (channel_uid) REFERENCES " + TABLE_CHANNELS
-                        + "(uid) ON DELETE CASCADE)",
+                        + "(uid) ON DELETE CASCADE ON UPDATE CASCADE)",
                 "CREATE TABLE " + TABLE_CHANNEL_CONFIG
                         + " (channel_uid VARCHAR(255) NOT NULL, name VARCHAR(255) NOT NULL, value TEXT, "
                         + "PRIMARY KEY (channel_uid, name), " + "FOREIGN KEY (channel_uid) REFERENCES " + TABLE_CHANNELS
-                        + "(uid) ON DELETE CASCADE)",
+                        + "(uid) ON DELETE CASCADE ON UPDATE CASCADE)",
                 "CREATE TABLE " + TABLE_CHANNEL_TAGS
                         + " (channel_uid VARCHAR(255) NOT NULL, tag VARCHAR(255) NOT NULL, "
                         + "PRIMARY KEY (channel_uid, tag), " + "FOREIGN KEY (channel_uid) REFERENCES " + TABLE_CHANNELS
-                        + "(uid) ON DELETE CASCADE)");
+                        + "(uid) ON DELETE CASCADE ON UPDATE CASCADE)");
 
         try (Statement statement = connection.createStatement()) {
             for (String ddl : statements) {
@@ -1038,8 +1002,7 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
     }
 
     private void cancelRefresh() {
-        ScheduledFuture<?> future = refreshFuture;
-        if (future != null) {
+        if (refreshFuture instanceof ScheduledFuture future) {
             future.cancel(true);
         }
         refreshFuture = null;
@@ -1062,26 +1025,11 @@ public class JdbcThingProvider extends AbstractProvider<Thing> implements ThingP
         removed.forEach(this::notifyListenersAboutRemovedElement);
     }
 
-    private @Nullable Boolean extractBoolean(ResultSet rs, String columnName) throws SQLException {
-        Object raw = rs.getObject(columnName);
-        if (raw == null) {
-            return null;
-        }
-        if (raw instanceof Boolean b) {
-            return b;
-        }
-        if (raw instanceof Number number) {
-            return number.intValue() != 0;
-        }
-        return null;
-    }
-
     private record ThingRow(String uid, String thingTypeUid, @Nullable String label, @Nullable String bridgeUid,
-            @Nullable String location, @Nullable String semanticEquipmentTag, @Nullable Boolean isBridge) {
+            @Nullable String location, @Nullable String semanticEquipmentTag) {
     }
 
     private record ChannelRow(String uid, String thingUid, @Nullable String channelTypeUid, @Nullable String itemType,
-            @Nullable String kind, @Nullable String label, @Nullable String description,
-            @Nullable String autoUpdatePolicy) {
+            String kind, @Nullable String label, @Nullable String description, @Nullable String autoUpdatePolicy) {
     }
 }

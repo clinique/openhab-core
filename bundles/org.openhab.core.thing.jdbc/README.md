@@ -26,30 +26,30 @@ The following properties are recognised:
 When the provider connects to an empty database it will automatically create the schema it requires. The following
 tables are managed:
 
-* `oh_things` – basic attributes for every thing (UID, thing type UID, label, bridge, location, semantic tag, bridge flag)
-* `oh_thing_properties` – key/value pairs attached to a thing
-* `oh_thing_config` – configuration entries for a thing (stored as scalar values; numbers and booleans are detected automatically)
-* `oh_channels` – channel definitions (UID, type UID, item type, kind, label, description, auto-update policy)
-* `oh_channel_properties` – key/value pairs attached to a channel
-* `oh_channel_config` – configuration entries for a channel
-* `oh_channel_tags` – default tags assigned to a channel
+* `things` – basic attributes for every thing (UID, thing type UID, label, bridge, location, semantic tag)
+* `thing_properties` – key/value pairs attached to a thing
+* `thing_config` – configuration entries for a thing (stored as scalar values; numbers and booleans are detected automatically)
+* `channels` – channel definitions (UID, type UID, item type, kind, label, description, auto-update policy)
+* `channel_properties` – key/value pairs attached to a channel
+* `channel_config` – configuration entries for a channel
+* `channel_tags` – default tags assigned to a channel
 
 For existing databases you can create the schema manually by using the statements `JdbcThingProvider` emits on startup.
-The auto-generation is idempotent and only runs when `oh_things` is missing.
+The auto-generation is idempotent and only runs when `things` is missing.
 
 ### Minimal example
 
 ```sql
-INSERT INTO oh_things (uid, thing_type_uid, label, bridge_uid, is_bridge)
-VALUES ('mqtt:topic:office:lamp', 'mqtt:topic', 'Office Lamp', 'mqtt:broker:main', FALSE);
+INSERT INTO things (uid, thing_type_uid, label, bridge_uid)
+VALUES ('mqtt:topic:office:lamp', 'mqtt:topic', 'Office Lamp', 'mqtt:broker:main');
 
-INSERT INTO oh_thing_config (thing_uid, name, value)
+INSERT INTO thing_config (thing_uid, name, value)
 VALUES ('mqtt:topic:office:lamp', 'availabilityTopic', 'devices/lamp/availability');
 
-INSERT INTO oh_channels (uid, thing_uid, channel_type_uid, item_type, kind, label)
+INSERT INTO channels (uid, thing_uid, channel_type_uid, item_type, kind, label)
 VALUES ('mqtt:topic:office:lamp:power', 'mqtt:topic:office:lamp', 'mqtt:switch', 'Switch', 'STATE', 'Power');
 
-INSERT INTO oh_channel_tags (channel_uid, tag)
+INSERT INTO channel_tags (channel_uid, tag)
 VALUES ('mqtt:topic:office:lamp:power', 'Lighting');
 ```
 

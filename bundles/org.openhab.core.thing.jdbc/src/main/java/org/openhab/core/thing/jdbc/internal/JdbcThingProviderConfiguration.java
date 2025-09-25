@@ -14,7 +14,6 @@ package org.openhab.core.thing.jdbc.internal;
 
 import java.time.Duration;
 import java.util.Map;
-import java.util.Optional;
 
 import org.eclipse.jdt.annotation.NonNullByDefault;
 import org.eclipse.jdt.annotation.Nullable;
@@ -27,8 +26,7 @@ import org.eclipse.jdt.annotation.Nullable;
 
 @NonNullByDefault
 final class JdbcThingProviderConfiguration {
-
-    static final String CONFIG_PID = "org.openhab.core.thing.jdbc";
+    public static final String CONFIG_PID = "org.openhab.core.thing.jdbc";
 
     private static final String CFG_URL = "url";
     private static final String CFG_USERNAME = "username";
@@ -53,38 +51,30 @@ final class JdbcThingProviderConfiguration {
         this.refreshInterval = refreshInterval;
     }
 
-    static Optional<JdbcThingProviderConfiguration> from(@Nullable Map<String, Object> properties) {
-        if (properties == null) {
-            return Optional.empty();
+    public static @Nullable JdbcThingProviderConfiguration from(@Nullable Map<String, Object> properties) {
+        if (properties != null && readString(properties, CFG_URL) instanceof String url) {
+            Duration refreshInterval = readDuration(properties, CFG_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL);
+            String username = readString(properties, CFG_USERNAME);
+            String password = readString(properties, CFG_PASSWORD);
+            String driverClass = readString(properties, CFG_DRIVER_CLASS);
+
+            return new JdbcThingProviderConfiguration(url, username, password, driverClass, refreshInterval);
         }
-
-        String url = readString(properties, CFG_URL);
-        if (url == null || url.isBlank()) {
-            return Optional.empty();
-        }
-
-        Duration refreshInterval = readDuration(properties, CFG_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL);
-
-        String username = normalize(readString(properties, CFG_USERNAME));
-        String password = normalize(readString(properties, CFG_PASSWORD));
-        String driverClass = normalize(readString(properties, CFG_DRIVER_CLASS));
-
-        return Optional.of(new JdbcThingProviderConfiguration(url, username, password, driverClass, refreshInterval));
-    }
-
-    private static @Nullable String normalize(@Nullable String value) {
-        return value == null || value.isBlank() ? null : value;
+        return null;
     }
 
     private static @Nullable String readString(Map<String, Object> properties, String key) {
         Object raw = properties.get(key);
-        if (raw instanceof String s) {
-            return s.trim();
+        if (raw == null) {
+            return null;
         }
-        if (raw instanceof String[] array && array.length > 0) {
-            return array[0].trim();
-        }
-        return null;
+
+        return switch (raw) {
+            case String s when s.isBlank() -> null;
+            case String s -> s.trim();
+            case String[] array when array.length > 0 -> array[0].trim();
+            default -> null;
+        };
     }
 
     private static Duration readDuration(Map<String, Object> properties, String key, Duration fallback) {
@@ -93,23 +83,20 @@ final class JdbcThingProviderConfiguration {
             return fallback;
         }
 
-        try {
-            if (raw instanceof Number number) {
-                return sanitizeDuration(number.longValue(), fallback);
+        return switch (raw) {
+            case Number number -> sanitizeDuration(number.longValue(), fallback);
+            case String s when !s.isBlank() -> {
+                try {
+                    yield sanitizeDuration(Long.parseLong(s.trim()), fallback);
+                } catch (NumberFormatException ignore) {
+                    yield fallback;
+                }
             }
-            if (raw instanceof String s && !s.isBlank()) {
-                return sanitizeDuration(Long.parseLong(s.trim()), fallback);
-            }
-        } catch (NumberFormatException e) {
-            // ignore and use fallback
-        }
-        return fallback;
+            default -> fallback;
+        };
     }
 
     private static Duration sanitizeDuration(long seconds, Duration fallback) {
-        if (seconds <= 0) {
-            return Duration.ZERO;
-        }
-        return Duration.ofSeconds(seconds);
+        return Duration.ofSeconds(seconds <= 0 ? 0 : seconds);
     }
 }
